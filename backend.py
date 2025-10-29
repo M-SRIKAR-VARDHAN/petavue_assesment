@@ -41,6 +41,7 @@ except Exception as e:
     print(f"❌ Could not initialize model. {e}")
     sys.exit(1)
 
+
 class QueryResponse(BaseModel):
     result: str
     executed_code: str
@@ -48,7 +49,7 @@ class QueryResponse(BaseModel):
     plot_path: str | None = None
 
 
-app = FastAPI(title="Excel AI Engine (with Upload)")
+app = FastAPI(title="Excel AI Engine (Dynamic Schema)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,6 +62,14 @@ app.mount("/plots", StaticFiles(directory="plots"), name="plots")
 print("[Debug] Mounted static path: /plots")
 
 
+def sanitize_name(name):
+    """Cleans a sheet name to be a valid Python variable name."""
+    s = re.sub(r'\W|^(?=\d)', '_', name).strip()
+    if not s:
+        return "sheet"
+    return s
+
+
 @app.post("/analyze", response_model=QueryResponse)
 async def analyze_uploaded_data(
     query: str = Form(...),
@@ -68,26 +77,57 @@ async def analyze_uploaded_data(
 ):
     print(f"\n[Request] Query: '{query}' | File: '{excel_file.filename}'")
 
-    # --- Load Excel File ---
+  
+    safe_globals = {
+        "__builtins__": {
+            "print": print, "len": len, "round": round, "abs": abs,
+            "sum": sum, "min": min, "max": max, "str": str,
+            "int": int, "float": float,
+        },
+        "pd": pd, "np": np, "plt": plt, "sns": sns,
+    }
+    
+    schema_description = "You have access to the following pandas DataFrames:\n"
+
     try:
         contents = await excel_file.read()
         excel_data = io.BytesIO(contents)
-        df = pd.read_excel(excel_data, sheet_name="Employees", engine="openpyxl")
-        excel_data.seek(0)
-        df_projects = pd.read_excel(excel_data, sheet_name="Projects", engine="openpyxl")
-        df_schema, df_projects_schema = df.columns.tolist(), df_projects.columns.tolist()
-        print("[Debug] Excel loaded successfully.")
+        
+       
+        xls = pd.ExcelFile(excel_data, engine="openpyxl")
+        sheet_names = xls.sheet_names
+        
+        if not sheet_names:
+            raise HTTPException(status_code=400, detail="The uploaded Excel file is empty or contains no sheets.")
+
+        print(f"[Debug] Found sheets: {sheet_names}")
+
+      
+        for sheet_name in sheet_names:
+          
+            var_name = sanitize_name(sheet_name)
+            
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            
+           
+            safe_globals[var_name] = df
+            
+            
+            schema_description += f"- `{var_name}` (from sheet '{sheet_name}'): Columns {df.columns.tolist()}\n"
+            
+        print("[Debug] Excel loaded dynamically.")
+        print(f"[Debug] Schema for prompt:\n{schema_description}")
+
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Error reading Excel file: {e}. Ensure 'Employees' and 'Projects' sheets exist.",
+            detail=f"Error reading Excel file: {e}. Ensure it's a valid .xlsx file.",
         )
 
-    # --- Prompt (FIXED) ---
+
     master_prompt = f"""
-    You are an expert Python data analyst. You have:
-    - df columns: {df_schema}
-    - df_projects columns: {df_projects_schema}
+    You are an expert Python data analyst.
+    {schema_description}
     - Access to plt and sns for plotting.
 
     Your response MUST be in one of two modes.
@@ -97,29 +137,18 @@ async def analyze_uploaded_data(
 
     MODE 1 (for data/table/number queries):
     - Return a single, valid Python expression.
-    - Example: df.nlargest(5, 'Salary')
+    - Example: {sanitize_name(sheet_names[0])}.describe()
+    - Example: {sanitize_name(sheet_names[0])}['SomeColumn'].mean()
 
     MODE 2 (for plot/graph queries):
     - Return a block of Python code to create, save, and close a plot.
     - Example:
-    plt.figure(figsize=(10,6)); sns.histplot(df['Salary']);
-    plt.title('Salary Distribution');
-    plt.savefig('plots/salary_dist.png');
+    plt.figure(figsize=(10,6)); sns.histplot({sanitize_name(sheet_names[0])}['SomeColumn']);
+    plt.title('Column Distribution');
+    plt.savefig('plots/column_dist.png');
     plt.close();
-    print("Plot saved to plots/salary_dist.png")
+    print("Plot saved to plots/column_dist.png")
     """
-
-   
-    safe_builtins = {
-        "print": print, "len": len, "round": round, "abs": abs,
-        "sum": sum, "min": min, "max": max, "str": str,
-        "int": int, "float": float,
-    }
-    safe_globals = {
-        "__builtins__": safe_builtins,
-        "df": df, "df_projects": df_projects,
-        "pd": pd, "np": np, "plt": plt, "sns": sns,
-    }
 
     ai_code = ""
     try:
@@ -133,45 +162,33 @@ async def analyze_uploaded_data(
         print(f"[Debug] AI generated code:\n{ai_code}")
 
         
-        
+
         cleaned_lines = []
         for line in ai_code.splitlines():
             stripped_line = line.strip()
-
-          
             if stripped_line.startswith("import "):
                 print(f"[Info] Removing import line: {stripped_line}")
                 continue
-
-          
             if stripped_line.startswith("```"):
                 continue
-            
-          
-            if stripped_line.startswith("1️⃣") or \
-               stripped_line.startswith("2️⃣") or \
-               "DATA/TABLE/NUMBER" in stripped_line or \
-               "PLOT/GRAPH" in stripped_line:
+            if stripped_line.startswith("1️⃣") or stripped_line.startswith("2️⃣") or "DATA/TABLE/NUMBER" in stripped_line or "PLOT/GRAPH" in stripped_line:
                 print(f"[Info] Removing preamble line: {stripped_line}")
                 continue
-
-          
             cleaned_lines.append(line)
-
         ai_code = "\n".join(cleaned_lines).strip()
 
 
-      
+        # --- Manual safety scan ---
         dangerous_words = ["os.", "sys", "subprocess", "open(", "exec(", "__"]
-        if any(word in ai_code for word in dangerous_words):
-            print(f"🚫 Unsafe word detected in code: {ai_code}")
-            raise HTTPException(status_code=403, detail="Unsafe operation detected.")
+        if any(word in ai_code for word in dangerous_words) and "safe_globals['__builtins__']" not in ai_code:
+             print(f"🚫 Unsafe word detected in code: {ai_code}")
+             raise HTTPException(status_code=403, detail="Unsafe operation detected.")
 
         print(f"[Debug] Cleaned safe code to execute:\n{ai_code}")
 
         result_output, is_plot, plot_path = "", False, None
 
-      
+        # --- Execute Code ---
         if "plt." in ai_code or "sns." in ai_code:
             print("[Mode: PLOT] Executing...")
             output_stream = io.StringIO()
@@ -185,11 +202,9 @@ async def analyze_uploaded_data(
             if "Plot saved to plots/" in result_output:
                 is_plot = True
                 rel_path = result_output.replace("Plot saved to ", "").strip()
-           
                 plot_path = os.path.basename(rel_path)
                 print(f"[Debug] Plot file: {plot_path}")
             else:
-           
                 is_plot = False
                 result_output = "Plotting code executed, but no valid 'Plot saved to...' message was captured."
         else:
@@ -211,10 +226,9 @@ async def analyze_uploaded_data(
         raise e
     except Exception as e:
         print(f"--- ERROR --- {type(e).__name__}: {e}")
-      
         raise HTTPException(status_code=500, detail=f"Error executing AI code: {type(e).__name__}: {e}. AI Code: {ai_code}")
 
 
 @app.get("/")
 async def root():
-    return {"message": "✅ Excel AI Engine API running. Go to /docs or use Streamlit frontend."}
+    return {"message": "✅ Excel AI Engine API (Dynamic) running. Go to /docs."}
