@@ -3,7 +3,11 @@ import streamlit as st
 import requests
 from pathlib import Path
 
-API_URL = "https://srikar-excel-backend.onrender.com/analyze"
+
+API_URL = "[https://srikar-excel-backend.onrender.com/analyze](https://srikar-excel-backend.onrender.com/analyze)"
+
+
+BASE_URL = "[https://srikar-excel-backend.onrender.com](https://srikar-excel-backend.onrender.com)"
 
 st.set_page_config(page_title="Excel AI Engine", layout="wide")
 
@@ -21,10 +25,12 @@ This app connects to your **FastAPI backend** powered by Google's Gemini model.
 """
 )
 
+
 with st.form("query_form"):
     excel_file = st.file_uploader("📁 Upload Excel (.xlsx)", type=["xlsx"], accept_multiple_files=False)
     query = st.text_input("💬 Enter your question")
     submit = st.form_submit_button("Analyze")
+
 
 
 if submit:
@@ -46,7 +52,6 @@ if submit:
             with st.spinner("⏳ Sending request to backend..."):
                 response = requests.post(API_URL, data=data, files=files, timeout=120)
 
-
             if response.status_code != 200:
                 st.error(f"❌ API Error {response.status_code}: {response.text}")
             else:
@@ -62,10 +67,11 @@ if submit:
 
                
                 if result.get("is_plot"):
-                    plot_path = result.get("plot_path")
-                    if plot_path:
-                        plot_filename = Path(plot_path).name
-                        plot_url = f"http://127.0.0.1:8000/plots/{plot_filename}"
+                    plot_filename = result.get("plot_path")
+                    if plot_filename:
+                        
+                        plot_url = f"{BASE_URL}/plots/{plot_filename}"
+                        
                         st.subheader("🎨 Generated Plot")
                         st.image(plot_url, use_column_width=True)
                     else:

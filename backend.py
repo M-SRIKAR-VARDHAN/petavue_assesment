@@ -16,6 +16,7 @@ import openpyxl
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+
 if not os.path.exists("plots"):
     os.makedirs("plots")
     print("📁 Created 'plots' directory to save visualizations.")
@@ -31,6 +32,7 @@ except KeyError:
 except Exception as e:
     print(f"❌ FATAL ERROR during API key setup: {e}")
     sys.exit(1)
+
 
 try:
     model = genai.GenerativeModel("gemini-pro-latest")
@@ -66,7 +68,7 @@ async def analyze_uploaded_data(
 ):
     print(f"\n[Request] Query: '{query}' | File: '{excel_file.filename}'")
 
-    
+    # --- Load Excel File ---
     try:
         contents = await excel_file.read()
         excel_data = io.BytesIO(contents)
@@ -81,20 +83,33 @@ async def analyze_uploaded_data(
             detail=f"Error reading Excel file: {e}. Ensure 'Employees' and 'Projects' sheets exist.",
         )
 
-    
+    # --- Prompt (FIXED) ---
     master_prompt = f"""
-    You are a Python data analyst. You have:
+    You are an expert Python data analyst. You have:
     - df columns: {df_schema}
     - df_projects columns: {df_projects_schema}
+    - Access to plt and sns for plotting.
 
-    Respond in one of two modes:
-    1️⃣ DATA/TABLE/NUMBER — return a single valid Python expression (no print()).
-    2️⃣ PLOT/GRAPH — use plt/sns, save with plt.savefig('plots/...'),
-        then plt.close() and print("Plot saved to plots/...").
-    Output only code.
+    Your response MUST be in one of two modes.
+    Do NOT state which mode you are in.
+    Do NOT add any explanations, headers, markdown, or text.
+    Output ONLY the raw Python code required.
+
+    MODE 1 (for data/table/number queries):
+    - Return a single, valid Python expression.
+    - Example: df.nlargest(5, 'Salary')
+
+    MODE 2 (for plot/graph queries):
+    - Return a block of Python code to create, save, and close a plot.
+    - Example:
+    plt.figure(figsize=(10,6)); sns.histplot(df['Salary']);
+    plt.title('Salary Distribution');
+    plt.savefig('plots/salary_dist.png');
+    plt.close();
+    print("Plot saved to plots/salary_dist.png")
     """
 
-    
+   
     safe_builtins = {
         "print": print, "len": len, "round": round, "abs": abs,
         "sum": sum, "min": min, "max": max, "str": str,
@@ -114,19 +129,39 @@ async def analyze_uploaded_data(
 
         if not response or not hasattr(response, "text"):
             raise HTTPException(status_code=500, detail="AI returned empty response.")
-        ai_code = response.text.strip().replace("```python", "").replace("```", "").strip()
+        ai_code = response.text.strip()
         print(f"[Debug] AI generated code:\n{ai_code}")
 
         
+        
         cleaned_lines = []
         for line in ai_code.splitlines():
-            if line.strip().startswith("import "):
-                print(f"[Info] Removing import line: {line.strip()}")
-                continue
-            cleaned_lines.append(line)
-        ai_code = "\n".join(cleaned_lines)
+            stripped_line = line.strip()
 
-        
+          
+            if stripped_line.startswith("import "):
+                print(f"[Info] Removing import line: {stripped_line}")
+                continue
+
+          
+            if stripped_line.startswith("```"):
+                continue
+            
+          
+            if stripped_line.startswith("1️⃣") or \
+               stripped_line.startswith("2️⃣") or \
+               "DATA/TABLE/NUMBER" in stripped_line or \
+               "PLOT/GRAPH" in stripped_line:
+                print(f"[Info] Removing preamble line: {stripped_line}")
+                continue
+
+          
+            cleaned_lines.append(line)
+
+        ai_code = "\n".join(cleaned_lines).strip()
+
+
+      
         dangerous_words = ["os.", "sys", "subprocess", "open(", "exec(", "__"]
         if any(word in ai_code for word in dangerous_words):
             print(f"🚫 Unsafe word detected in code: {ai_code}")
@@ -136,7 +171,7 @@ async def analyze_uploaded_data(
 
         result_output, is_plot, plot_path = "", False, None
 
-        
+      
         if "plt." in ai_code or "sns." in ai_code:
             print("[Mode: PLOT] Executing...")
             output_stream = io.StringIO()
@@ -150,8 +185,13 @@ async def analyze_uploaded_data(
             if "Plot saved to plots/" in result_output:
                 is_plot = True
                 rel_path = result_output.replace("Plot saved to ", "").strip()
-                plot_path = os.path.join("plots", os.path.basename(rel_path))
+           
+                plot_path = os.path.basename(rel_path)
                 print(f"[Debug] Plot file: {plot_path}")
+            else:
+           
+                is_plot = False
+                result_output = "Plotting code executed, but no valid 'Plot saved to...' message was captured."
         else:
             print("[Mode: DATA] Evaluating...")
             result = eval(ai_code, safe_globals, {})
@@ -171,7 +211,8 @@ async def analyze_uploaded_data(
         raise e
     except Exception as e:
         print(f"--- ERROR --- {type(e).__name__}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+      
+        raise HTTPException(status_code=500, detail=f"Error executing AI code: {type(e).__name__}: {e}. AI Code: {ai_code}")
 
 
 @app.get("/")
