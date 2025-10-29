@@ -1,13 +1,14 @@
 
+
 import streamlit as st
 import requests
 from pathlib import Path
 
 
-API_URL = "[https://srikar-excel-backend.onrender.com/analyze](https://srikar-excel-backend.onrender.com/analyze)"
+API_URL = "https://srikar-excel-backend.onrender.com/analyze"
 
 
-BASE_URL = "[https://srikar-excel-backend.onrender.com](https://srikar-excel-backend.onrender.com)"
+BASE_URL = "https://srikar-excel-backend.onrender.com"
 
 st.set_page_config(page_title="Excel AI Engine", layout="wide")
 
@@ -32,7 +33,6 @@ with st.form("query_form"):
     submit = st.form_submit_button("Analyze")
 
 
-
 if submit:
     if not excel_file:
         st.warning("Please upload an Excel file before analyzing.")
@@ -50,7 +50,9 @@ if submit:
             data = {"query": query}
 
             with st.spinner("⏳ Sending request to backend..."):
-                response = requests.post(API_URL, data=data, files=files, timeout=120)
+
+                response = requests.post(API_URL.strip(), data=data, files=files, timeout=120)
+
 
             if response.status_code != 200:
                 st.error(f"❌ API Error {response.status_code}: {response.text}")
@@ -65,12 +67,12 @@ if submit:
                 st.subheader("🧠 AI-Generated Code")
                 st.code(result.get("executed_code", ""), language="python")
 
-               
+                
                 if result.get("is_plot"):
                     plot_filename = result.get("plot_path")
                     if plot_filename:
-                        
-                        plot_url = f"{BASE_URL}/plots/{plot_filename}"
+                      
+                        plot_url = f"{BASE_URL.strip()}/plots/{plot_filename}"
                         
                         st.subheader("🎨 Generated Plot")
                         st.image(plot_url, use_column_width=True)
