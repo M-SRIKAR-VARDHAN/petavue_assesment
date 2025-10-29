@@ -1,0 +1,6 @@
+# Ignore virtual environments
+venv/
+*.pyc
+
+# Ignore local plot files
+plots/

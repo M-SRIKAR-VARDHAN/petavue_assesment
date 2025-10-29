@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+google-generativeai
+pandas
+openpyxl
+python-multipart
+tabulate
+matplotlib
+seaborn
+streamlit
+requests
