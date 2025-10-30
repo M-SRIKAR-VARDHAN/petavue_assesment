@@ -16,7 +16,6 @@ import openpyxl
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-
 if not os.path.exists("plots"):
     os.makedirs("plots")
     print("📁 Created 'plots' directory to save visualizations.")
@@ -33,7 +32,6 @@ except Exception as e:
     print(f"❌ FATAL ERROR during API key setup: {e}")
     sys.exit(1)
 
-
 try:
     model = genai.GenerativeModel("gemini-pro-latest")
     print("[Debug] Model configured successfully.")
@@ -41,15 +39,13 @@ except Exception as e:
     print(f"❌ Could not initialize model. {e}")
     sys.exit(1)
 
-
 class QueryResponse(BaseModel):
     result: str
     executed_code: str
     is_plot: bool = False
     plot_path: str | None = None
 
-
-app = FastAPI(title="Excel AI Engine (Dynamic Schema)")
+app = FastAPI(title="Excel AI Engine (Smart EDA)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,14 +57,12 @@ app.add_middleware(
 app.mount("/plots", StaticFiles(directory="plots"), name="plots")
 print("[Debug] Mounted static path: /plots")
 
-
 def sanitize_name(name):
     """Cleans a sheet name to be a valid Python variable name."""
     s = re.sub(r'\W|^(?=\d)', '_', name).strip()
     if not s:
         return "sheet"
     return s
-
 
 @app.post("/analyze", response_model=QueryResponse)
 async def analyze_uploaded_data(
@@ -77,7 +71,7 @@ async def analyze_uploaded_data(
 ):
     print(f"\n[Request] Query: '{query}' | File: '{excel_file.filename}'")
 
-  
+
     safe_globals = {
         "__builtins__": {
             "print": print, "len": len, "round": round, "abs": abs,
@@ -87,13 +81,13 @@ async def analyze_uploaded_data(
         "pd": pd, "np": np, "plt": plt, "sns": sns,
     }
     
-    schema_description = "You have access to the following pandas DataFrames:\n"
+    schema_description = "You have access to the following pandas DataFrames:\n\n"
+
 
     try:
         contents = await excel_file.read()
         excel_data = io.BytesIO(contents)
         
-       
         xls = pd.ExcelFile(excel_data, engine="openpyxl")
         sheet_names = xls.sheet_names
         
@@ -102,20 +96,27 @@ async def analyze_uploaded_data(
 
         print(f"[Debug] Found sheets: {sheet_names}")
 
-      
+
         for sheet_name in sheet_names:
-          
             var_name = sanitize_name(sheet_name)
-            
             df = pd.read_excel(xls, sheet_name=sheet_name)
-            
-           
             safe_globals[var_name] = df
             
+
+            info_stream = io.StringIO()
+            df.info(buf=info_stream)
+            info_string = info_stream.getvalue()
             
-            schema_description += f"- `{var_name}` (from sheet '{sheet_name}'): Columns {df.columns.tolist()}\n"
+
+            head_string = df.head(3).to_string()
             
-        print("[Debug] Excel loaded dynamically.")
+
+            schema_description += f"--- DataFrame: `{var_name}` (from sheet '{sheet_name}') ---\n"
+            schema_description += f"1. Columns, Dtypes, and Non-Null Counts:\n{info_string}\n"
+            schema_description += f"2. First 3 Rows of Data (to see headers):\n{head_string}\n"
+            schema_description += "---------------------------------------------------\n\n"
+            
+        print("[Debug] Excel loaded and Auto-EDA complete.")
         print(f"[Debug] Schema for prompt:\n{schema_description}")
 
     except Exception as e:
@@ -127,7 +128,10 @@ async def analyze_uploaded_data(
 
     master_prompt = f"""
     You are an expert Python data analyst.
+    Here is a summary of the data you have access to:
+    
     {schema_description}
+    
     - Access to plt and sns for plotting.
 
     Your response MUST be in one of two modes.
@@ -178,7 +182,7 @@ async def analyze_uploaded_data(
         ai_code = "\n".join(cleaned_lines).strip()
 
 
-        # --- Manual safety scan ---
+
         dangerous_words = ["os.", "sys", "subprocess", "open(", "exec(", "__"]
         if any(word in ai_code for word in dangerous_words) and "safe_globals['__builtins__']" not in ai_code:
              print(f"🚫 Unsafe word detected in code: {ai_code}")
@@ -188,7 +192,7 @@ async def analyze_uploaded_data(
 
         result_output, is_plot, plot_path = "", False, None
 
-        # --- Execute Code ---
+
         if "plt." in ai_code or "sns." in ai_code:
             print("[Mode: PLOT] Executing...")
             output_stream = io.StringIO()
@@ -208,7 +212,7 @@ async def analyze_uploaded_data(
                 is_plot = False
                 result_output = "Plotting code executed, but no valid 'Plot saved to...' message was captured."
         else:
-            print("[Mode: DATA] Evaluating...")
+            print("[Debug] Mode: DATA] Evaluating...")
             result = eval(ai_code, safe_globals, {})
             if isinstance(result, pd.DataFrame):
                 result_output = tabulate(result.head(20), headers="keys", tablefmt="psql")
@@ -228,7 +232,6 @@ async def analyze_uploaded_data(
         print(f"--- ERROR --- {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"Error executing AI code: {type(e).__name__}: {e}. AI Code: {ai_code}")
 
-
 @app.get("/")
 async def root():
-    return {"message": "✅ Excel AI Engine API (Dynamic) running. Go to /docs."}
+    return {"message": "✅ Excel AI Engine API (Smart EDA) running. Go to /docs."}
