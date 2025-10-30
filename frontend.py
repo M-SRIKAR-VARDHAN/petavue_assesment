@@ -1,8 +1,8 @@
 
-
 import streamlit as st
 import requests
 from pathlib import Path
+
 
 
 API_URL = "https://srikar-excel-backend.onrender.com/analyze"
@@ -19,39 +19,51 @@ st.markdown(
 This app connects to your **FastAPI backend** powered by Google's Gemini model.
 
 **Instructions:**
-1. Upload an Excel file with sheets named **`Employees`** and **`Projects`**
-2. Type a natural language question (e.g., *"show average salary by department"*)
+1. Upload one or more Excel files.
+2. Type a natural language question (e.g., *"show average salary by department"* or *"join file1_sheet1 and file2_sheet1 on the 'ID' column"*).
 3. Click **Analyze**
 4. View the result or generated visualization below.
 """
 )
 
 
+
 with st.form("query_form"):
-    excel_file = st.file_uploader("📁 Upload Excel (.xlsx)", type=["xlsx"], accept_multiple_files=False)
+    excel_files = st.file_uploader(
+        "📁 Upload Excel (.xlsx)", 
+        type=["xlsx"], 
+        accept_multiple_files=True 
+    )
     query = st.text_input("💬 Enter your question")
     submit = st.form_submit_button("Analyze")
 
 
+
 if submit:
-    if not excel_file:
-        st.warning("Please upload an Excel file before analyzing.")
+    if not excel_files:
+        st.warning("Please upload at least one Excel file before analyzing.")
     elif not query.strip():
         st.warning("Please enter a query to analyze.")
     else:
         try:
-            files = {
-                "excel_file": (
-                    excel_file.name,
-                    excel_file.getbuffer(),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            }
+
+            files_list = [
+                ("excel_files", (
+                    file.name, 
+                    file.getbuffer(), 
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )) for file in excel_files
+            ]
+            
             data = {"query": query}
 
             with st.spinner("⏳ Sending request to backend..."):
-
-                response = requests.post(API_URL.strip(), data=data, files=files, timeout=120)
+                response = requests.post(
+                    API_URL.strip(), 
+                    data=data, 
+                    files=files_list,  
+                    timeout=180 
+                )
 
 
             if response.status_code != 200:
@@ -67,13 +79,11 @@ if submit:
                 st.subheader("🧠 AI-Generated Code")
                 st.code(result.get("executed_code", ""), language="python")
 
-                
+               
                 if result.get("is_plot"):
                     plot_filename = result.get("plot_path")
                     if plot_filename:
-                      
                         plot_url = f"{BASE_URL.strip()}/plots/{plot_filename}"
-                        
                         st.subheader("🎨 Generated Plot")
                         st.image(plot_url, use_column_width=True)
                     else:
