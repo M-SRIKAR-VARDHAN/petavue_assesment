@@ -19,6 +19,7 @@ import openpyxl
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from pathlib import Path
 
 if not os.path.exists("plots"):
     os.makedirs("plots")
