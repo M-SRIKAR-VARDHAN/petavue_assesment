@@ -16,6 +16,7 @@ import openpyxl
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+
 if not os.path.exists("plots"):
     os.makedirs("plots")
     print("📁 Created 'plots' directory to save visualizations.")
@@ -44,6 +45,8 @@ class QueryResponse(BaseModel):
     executed_code: str
     is_plot: bool = False
     plot_path: str | None = None
+    csv_data: str | None = None
+
 
 app = FastAPI(title="Excel AI Engine (Multi-File & Write Ops)")
 app.add_middleware(
@@ -64,6 +67,7 @@ def sanitize_name(name):
         return "sheet"
     return s
 
+
 @app.post("/analyze", response_model=QueryResponse)
 async def analyze_uploaded_data(
     query: str = Form(...),
@@ -82,6 +86,7 @@ async def analyze_uploaded_data(
     
     schema_description = "You have access to the following pandas DataFrames:\n\n"
 
+ 
     try:
         if not excel_files:
              raise HTTPException(status_code=400, detail="No Excel files were uploaded.")
@@ -118,7 +123,7 @@ async def analyze_uploaded_data(
                 schema_description += "---------------------------------------------------\n\n"
             
         print("[Debug] All files loaded and Auto-EDA complete.")
-        print(f"[Debug] Schema for prompt:\n{schema_description}")
+  
 
     except Exception as e:
         raise HTTPException(
@@ -126,6 +131,7 @@ async def analyze_uploaded_data(
             detail=f"Error reading Excel file: {e}. Ensure it's a valid .xlsx file.",
         )
 
+  
     master_prompt = f"""
     You are an expert Python data analyst.
     Here is a summary of the data you have access to:
@@ -140,8 +146,8 @@ async def analyze_uploaded_data(
         -   If the user asks for a single number (e.g., "what is the average salary"), assign it to `result_value`.
         -   If the user asks for a plot, generate code to save it to 'plots/' and print the path (e.g., `print("Plot saved to plots/my_plot.png")`).
     
-    2.  **Write Queries (create, add, join, pivot):**
-        -   Perform the operation (e.g., `data_Employees['new_col'] = ...`).
+    2.  **Write Queries (create, add, update, modify, join, pivot):**
+        -   Perform the operation (e.g., `data_Employees['new_col'] = ...` or `data_Employees['Salary'] = data_Employees['Salary'] * 1.1`).
         -   After the operation, assign the **modified DataFrame** to `result_df` so the user can see the change.
     
     3.  **Examples:**
@@ -171,6 +177,7 @@ async def analyze_uploaded_data(
         -   **CRITICAL: Do NOT use the `os` library. The `plots` directory already exists. Do not check if it exists or create it.**
     """
 
+   
     ai_code = ""
     try:
         print("[Debug] Generating AI code...")
@@ -190,7 +197,13 @@ async def analyze_uploaded_data(
                 continue
             if stripped_line.startswith("```"):
                 continue
-            cleaned_lines.append(line)
+    
+    
+            cleaned_line = re.sub(r'^[12]️⃣\s*DATA/TABLE/NUMBER\s*', '', stripped_line, flags=re.IGNORECASE)
+            cleaned_line = re.sub(r'^[12]️⃣\s*PLOT/GRAPH\s*', '', cleaned_line, flags=re.IGNORECASE)
+            cleaned_line = re.sub(r'[^\x00-\x7F]+', '', cleaned_line) 
+     
+            cleaned_lines.append(cleaned_line)
         ai_code = "\n".join(cleaned_lines).strip()
 
         dangerous_words = ["os.", "sys", "subprocess", "open(", "exec(", "__"]
@@ -200,10 +213,13 @@ async def analyze_uploaded_data(
 
         print(f"[Debug] Cleaned safe code to execute:\n{ai_code}")
 
+  
         result_output, is_plot, plot_path = "", False, None
+        csv_data = None 
         local_scope = {} 
         output_stream = io.StringIO()
         sys.stdout = output_stream
+        
         try:
             exec(ai_code, safe_globals, local_scope)
         finally:
@@ -221,6 +237,12 @@ async def analyze_uploaded_data(
         elif "result_df" in local_scope:
             print("[Debug] Found `result_df` variable.")
             result_df = local_scope["result_df"]
+            
+    
+            if isinstance(result_df, (pd.DataFrame, pd.Series)):
+                csv_data = result_df.to_csv(index=False)
+    
+
             if isinstance(result_df, pd.DataFrame):
                 result_output = tabulate(result_df.head(20), headers="keys", tablefmt="psql")
             elif isinstance(result_df, pd.Series):
@@ -228,27 +250,27 @@ async def analyze_uploaded_data(
             else:
                 result_output = str(result_df)
         
-
         elif "result_value" in local_scope:
             print("[Debug] Found `result_value` variable.")
             result_output = str(local_scope["result_value"])
         
-
         else:
             print("[Debug] No plot, result_df, or result_value found. Returning print output.")
             result_output = print_output if print_output else "Code executed, but no result was returned."
 
-
         return QueryResponse(
-            result=result_output, executed_code=ai_code,
-            is_plot=is_plot, plot_path=plot_path
+            result=result_output, 
+            executed_code=ai_code,
+            is_plot=is_plot, 
+            plot_path=plot_path,
+            csv_data=csv_data
         )
 
+  
     except HTTPException as e:
         raise e
     except Exception as e:
         print(f"--- ERROR --- {type(e).__name__}: {e}")
-
         raise HTTPException(status_code=500, detail=f"Error executing AI code: {type(e).__name__}: {repr(e)}. AI Code: {ai_code}")
 
 
